@@ -1,0 +1,232 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.env
+
+.venv/
+
+# VS Code
+.vscode/
+
+
+# def process_section(page: Page, section_name: str, sheet):
+
+#     print(f"\n=== Processing {section_name} ===")
+
+#     # Open the section
+#     page.locator(f"a:has-text('{section_name}')").click()
+#     page.wait_for_load_state("networkidle")
+
+#     set_page_size(page, 20)
+
+#     # Scrape all practice names into the sheet
+#     scrape_all_practice_names(page, sheet, section_name)
+
+#     sheet_practices = set(get_practices_from_sheet(sheet, section_name))
+#     print(f"{len(sheet_practices)} practices loaded from sheet")
+
+#     go_to_first_page(page)
+#     wait_for_practice_table(page)
+#     set_page_size(page, 20)
+
+#     processed = set()
+
+#     # Store updates here
+#     batch_updates = {}
+
+#     while True:
+
+#         rows = page.locator(TABLE_ROWS)
+#         total_rows = rows.count()
+
+#         for i in range(total_rows):
+
+#             row = rows.nth(i)
+
+#             btn = row.locator("button#folder-level-select-link")
+#             span = row.locator("span:not([aria-hidden])")
+
+#             if btn.count() > 0:
+#                 practice = btn.inner_text().strip()
+#                 clickable = True
+#             elif span.count() > 0:
+#                 practice = span.inner_text().strip()
+#                 clickable = False
+#             else:
+#                 continue
+
+#             if practice not in sheet_practices or practice in processed:
+#                 continue
+
+#             processed.add(practice)
+
+#             print(f"Processing {practice}")
+
+#             if clickable:
+
+#                 if not btn.is_enabled():
+#                     print(f"Cannot open {practice}")
+#                     status = "FILE NOT FOUND"
+
+#                 else:
+#                     try:
+#                         btn.click(timeout=5000)
+
+#                         page.wait_for_timeout(2000)
+
+#                         success = download_files_for_practice(
+#                             page, practice, section_name
+#                         )
+
+#                         status = "FILE DOWNLOADED" if success else "FILE NOT FOUND"
+
+#                     except Exception as e:
+#                         print(f"Failed for {practice}: {e}")
+#                         status = "FILE NOT FOUND"
+
+#                     finally:
+#                         click_breadcrumb(page)
+#                         set_page_size(page, 20)
+#                         wait_for_practice_table(page)
+
+#             else:
+#                 print(f"Non-clickable practice: {practice}")
+#                 status = "FILE NOT FOUND"
+
+#             # Store result
+#             batch_updates[practice] = status
+
+#             # ✅ NEW: Update every 10 practices
+#             if sheet and len(batch_updates) >= 10:
+
+#                 print(f"Bulk updating {len(batch_updates)} practices...")
+
+#                 try:
+#                     bulk_update_uhc_file_status(sheet, section_name, batch_updates)
+#                 except Exception as e:
+#                     print(f"Sheet bulk update failed: {e}")
+
+#                 batch_updates.clear()
+
+#         # ---- Pagination ----
+#         next_btn = page.locator(NEXT_BTN).first
+
+#         if next_btn.is_disabled() or not next_btn.is_visible():
+#             break
+
+#         next_btn.click()
+#         wait_for_practice_table(page)
+#         set_page_size(page, 20)
+
+#     # ---- Update remaining practices ----
+#     if sheet and batch_updates:
+
+#         print("\nUpdating remaining practices...")
+
+#         for practice, status in batch_updates.items():
+
+#             try:
+#                 bulk_update_uhc_file_status(sheet, section_name, batch_updates)
+#             except Exception as e:
+#                 print(f"Sheet bulk update failed: {e}")
+
+#     print("All practices processed and sheet updated.")
+
+
+# def run_login(playwright, headless=False):
+#     browser = playwright.chromium.launch(
+#         headless=headless,
+#         args=[
+#             "--disable-notifications",
+#             "--disable-popup-blocking",
+#             "--disable-automation",
+#             "--no-sandbox",
+#             "--disable-blink-features=AutomationControlled",
+#             "--disable-infobars",
+#             "--disable-dev-shm-usage",
+#         ],
+#     )
+
+#     context = browser.new_context()
+#     page = context.new_page()
+
+#     print(" Opening site...")
+#     page.goto(
+#     EnvData.BASE_URL,
+#      wait_until="networkidle",  #  good choice for pages with background requests
+#     timeout=120_000          # important for UHC
+#       )   
+    
+#     page.wait_for_timeout(2000)
+#     close_ad_if_present(page)
+
+#     # ───── SIGN IN (FIXED) ─────
+#     sign_in = page.locator("#signin-btn-wrapper-tt a")
+#     expect(sign_in).to_be_visible(timeout=30000)
+
+#     # REQUIRED: navigation-safe click
+#     with page.expect_navigation(wait_until="domcontentloaded"):
+#         sign_in.click()
+
+
+#     page.wait_for_timeout(3000)    
+
+
+
+# def download_files_for_practice(page: Page, practice_name: str, section_name: str) -> bool:
+#     try:
+#         print(f" Entered practice: {practice_name}")
+#         wait_for_document_table(page)
+#         set_page_size(page, 50)
+
+#         select_all = page.locator(
+#             "input.abyss-data-table-selection[type='checkbox']"
+#         ).first
+#         expect(select_all).to_be_visible(timeout=15_000)
+#         if not select_all.is_checked():
+#             select_all.click()
+#             page.wait_for_timeout(500)
+
+#         checked_boxes = page.locator(
+#             "input.abyss-data-table-selection[type='checkbox']:checked"
+#         )
+#         file_count = checked_boxes.count()
+#         if file_count == 0:
+#             print(" No files selected")
+#             return False
+
+#         bulk_actions = page.locator(
+#             "[data-testid*='bulk-actions-dropdown']"
+#         ).first
+#         expect(bulk_actions).to_be_visible(timeout=10_000)
+#         bulk_actions.click()
+
+#         download_item = page.locator(
+#             "div[role='menuitem']:has-text('Download')"
+#         ).first
+#         expect(download_item).to_be_visible(timeout=10_000)
+
+#         downloads = []
+
+#         def handle_download(download):
+#             downloads.append(download)
+
+#         page.once("download", handle_download)
+#         download_item.click()
+#         page.wait_for_event("download", timeout=120_000)
+
+#         all_saved = True
+#         for download in downloads:
+#             saved = save_download(download, practice_name, section_name)
+#             if not saved:
+#                 all_saved = False
+
+#         return all_saved
+
+#     except Exception as e:
+#         print(f" Download failed for {practice_name}: {e}")
+#         return False
