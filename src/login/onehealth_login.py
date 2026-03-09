@@ -1,6 +1,10 @@
 from playwright.sync_api import Page, expect, TimeoutError
-from utils.env_data import EnvData
+from src.utils.env_data import EnvData
 import tkinter as tk
+from src.utils.logger import setup_logger
+
+
+logger = setup_logger(__name__)
 
 
 def hold_for_manual_otp():
@@ -29,8 +33,9 @@ def close_ad_if_present(page: Page, timeout: int = 5000):
         close_icon = page.locator("i.material-icons", has_text="close").first
         close_icon.wait_for(state="visible", timeout=timeout)
         close_icon.click()
-        print(" Ad popup closed")
+        logger.info(" Ad popup closed")
     except TimeoutError:
+
         pass
 
 
@@ -52,26 +57,22 @@ def run_login(playwright, headless=False):
     context = browser.new_context()
     page = context.new_page()
 
-    print("Opening site...")
+    logger.info("Opening site...")
 
     # Retry loading site
     for attempt in range(5):
         try:
-            page.goto(
-                EnvData.BASE_URL,
-                wait_until="domcontentloaded",
-                timeout=120_000
-            )
+            page.goto(EnvData.BASE_URL, wait_until="domcontentloaded", timeout=120_000)
 
             if page.locator("text=This site can’t be reached").is_visible(timeout=3000):
                 raise Exception("Site not reachable")
 
-            print("Site loaded successfully")
+            logger.info("Site loaded successfully")
             break
 
         except Exception as e:
-            print(f"Network issue: {e}")
-            print("Refreshing page...")
+            logger.info(f"Network issue: {e}")
+            logger.info("Refreshing page...")
             page.reload()
             page.wait_for_timeout(5000)
 
@@ -103,7 +104,7 @@ def run_login(playwright, headless=False):
         page.locator("#btnLogin").click()
 
     # ───── OTP OR HOME DETECTION ─────
-    print("Waiting for OTP or Home page...")
+    logger.info("Waiting for OTP or Home page...")
 
     otp_button = page.locator("#textMsg")
     home_indicator = page.locator("[data-testid='documents-and-reporting-link']")
@@ -119,19 +120,19 @@ def run_login(playwright, headless=False):
         )
 
         if otp_button.is_visible():
-            print("OTP REQUIRED")
+            logger.info("OTP REQUIRED")
 
             otp_button.click()
-            print("Enter OTP manually in browser")
+            logger.info("Enter OTP manually in browser")
 
             hold_for_manual_otp()
 
             expect(home_indicator).to_be_visible(timeout=30000)
-            print("Login successful (after OTP)")
+            logger.info("Login successful (after OTP)")
 
         else:
             expect(home_indicator).to_be_visible(timeout=30000)
-            print("Login successful (no OTP)")
+            logger.info("Login successful (no OTP)")
 
     except TimeoutError:
         page.pause()

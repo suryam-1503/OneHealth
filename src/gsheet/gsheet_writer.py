@@ -1,6 +1,9 @@
 from src.gsheet.gsheet_client import get_uhc_file_sheet
-from utils.env_data import EnvData
+from src.utils.env_data import EnvData
+from src.utils.logger import setup_logger
 
+
+logger = setup_logger(__name__)
 
 def get_practices_from_sheet(sheet, section_name: str) -> list[str]:
     """
@@ -8,10 +11,10 @@ def get_practices_from_sheet(sheet, section_name: str) -> list[str]:
     Returns list of practice names without status suffixes.
     """
     if not sheet:
-        print(" Google Sheet not available for reading")
+        logger.info(" Google Sheet not available for reading")
         return []
 
-    print(f"Reading practice names from Google Sheet for {section_name}...")
+    logger.info(f"Reading practice names from Google Sheet for {section_name}...")
 
     col_mapping = {
         "Appeals and Disputes": 1,
@@ -39,15 +42,13 @@ def get_practices_from_sheet(sheet, section_name: str) -> list[str]:
             ]:
                 practice_names.append(name)
 
-    print(f"Found {len(practice_names)} practices in Google Sheet for {section_name}")
+    logger.info(
+        f"Found {len(practice_names)} practices in Google Sheet for {section_name}"
+    )
     return practice_names
 
 
-def bulk_update_uhc_file_status(
-    sheet,
-    section_name: str,
-    updates: dict
-):
+def bulk_update_uhc_file_status(sheet, section_name: str, updates: dict):
     """
     Bulk update practice statuses in Google Sheet.
 
@@ -59,7 +60,7 @@ def bulk_update_uhc_file_status(
     """
 
     if not sheet:
-        print("Google Sheet not available")
+        logger.info("Google Sheet not available")
         return
 
     headers = sheet.row_values(1)
@@ -83,26 +84,24 @@ def bulk_update_uhc_file_status(
             status = updates[base_name]
             new_value = f"{base_name} - {status}"
 
-            batch_data.append({
-                "range": f"{col_letter}{i}",
-                "values": [[new_value]]
-            })
+            batch_data.append({"range": f"{col_letter}{i}", "values": [[new_value]]})
 
     if batch_data:
 
         sheet.batch_update(batch_data)
 
-        print(f"Bulk updated {len(batch_data)} rows")
-    
+        logger.info(f"Bulk updated {len(batch_data)} rows")
+
+
 def batch_update_practice_names(sheet, practice_names: list[str], section_name: str):
     """
     Batch update multiple practice names (names only, NO status).
     """
     if not sheet or not practice_names:
-        print(" No sheet or practice names to update")
+        logger.info(" No sheet or practice names to update")
         return False
 
-    print(f" Batch writing {len(practice_names)} practices into '{section_name}'")
+    logger.info(f" Batch writing {len(practice_names)} practices into '{section_name}'")
 
     # Column mapping (adjust if your sheet layout changes)
     col_mapping = {
@@ -124,5 +123,5 @@ def batch_update_practice_names(sheet, practice_names: list[str], section_name: 
 
     sheet.update(values, range_name)
 
-    print(" Practice names written to Google Sheet (no status)")
+    logger.info(" Practice names written to Google Sheet (no status)")
     return True

@@ -1,11 +1,10 @@
 import gspread
-import ssl
-import urllib3
-import requests
 from google.oauth2.service_account import Credentials
-from utils.env_data import EnvData
+from src.utils.env_data import EnvData
+from src.utils.logger import setup_logger
 
 
+logger = setup_logger(__name__)
 def get_gspread_client():
     """
     Create a Google Sheets client using service account info from environment variables.
@@ -31,11 +30,11 @@ def get_gspread_client():
 
         credentials = Credentials.from_service_account_info(creds_info, scopes=scopes)
         client = gspread.authorize(credentials)
-        print(" Google Sheet client created successfully")
+        logger.info(" Google Sheet client created successfully")
         return client
 
     except Exception as e:
-        print(f" Error creating Google Sheet client: {e}")
+        logger.error(f" Error creating Google Sheet client: {e}")
         return None
 
 
@@ -50,6 +49,6 @@ def get_uhc_file_sheet():
         sheet = spreadsheet.worksheet(EnvData.WORKSHEET_NAME)
         return sheet
     except Exception as e:
-        print(f"Error accessing {EnvData.SPREADSHEET_NAME} Google Sheet: {e}")
-        print(f"Error type: {type(e).__name__}")
+        logger.error(f"Error accessing {EnvData.SPREADSHEET_NAME} Google Sheet: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
         return None
