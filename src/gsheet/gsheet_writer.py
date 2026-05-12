@@ -11,7 +11,7 @@ def get_practices_from_sheet(sheet, section_name: str) -> list[str]:
     Returns list of practice names without status suffixes.
     """
     if not sheet:
-        logger.info(" Google Sheet not available for reading")
+        logger.info("Google Sheet not available for reading")
         return []
 
     logger.info(f"Reading practice names from Google Sheet for {section_name}...")
@@ -19,8 +19,9 @@ def get_practices_from_sheet(sheet, section_name: str) -> list[str]:
     col_mapping = {
         "Appeals and Disputes": 1,
         "Claim Letters": 2,
-        "Overpayment Documents": 3,
-        "Prior Auth Letters": 4,
+        "HouseCalls Documentation": 3,
+        "Overpayment Documents": 4,
+        "Prior Auth Letters": 5,
     }
 
     col = col_mapping.get(section_name, 1)
@@ -37,6 +38,7 @@ def get_practices_from_sheet(sheet, section_name: str) -> list[str]:
             if name.lower() not in [
                 "appeals and disputes",
                 "claim letters",
+                "housecalls documentation",
                 "overpayment documents",
                 "prior auth letters",
             ]:
@@ -49,15 +51,7 @@ def get_practices_from_sheet(sheet, section_name: str) -> list[str]:
 
 
 def bulk_update_uhc_file_status(sheet, section_name: str, updates: dict):
-    """
-    Bulk update practice statuses in Google Sheet.
-
-    updates example:
-    {
-        "Practice A": "file downloaded",
-        "Practice B": "FILE NOT FOUND"
-    }
-    """
+    
 
     if not sheet:
         logger.info("Google Sheet not available")
@@ -107,8 +101,9 @@ def batch_update_practice_names(sheet, practice_names: list[str], section_name: 
     col_mapping = {
         "Appeals and Disputes": 1,
         "Claim Letters": 2,
-        "Overpayment Documents": 3,
-        "Prior Auth Letters": 4,
+        "HouseCalls Documentation": 3,
+        "Overpayment Documents": 4,
+        "Prior Auth Letters": 5,
     }
 
     col = col_mapping.get(section_name)
@@ -125,3 +120,61 @@ def batch_update_practice_names(sheet, practice_names: list[str], section_name: 
 
     logger.info(" Practice names written to Google Sheet (no status)")
     return True
+
+
+def clear_sheet(sheet):
+    """
+    Clear only data (keep header row intact)
+    """
+    try:
+        # Get all values
+        all_values = sheet.get_all_values()
+
+        if len(all_values) <= 1:
+            logger.info("Sheet already empty (only header present)")
+            return
+
+        # Number of rows and columns
+        num_rows = len(all_values)
+        num_cols = len(all_values[0])
+
+        # Create empty data (excluding header)
+        empty_data = [["" for _ in range(num_cols)] for _ in range(num_rows - 1)]
+
+        # Clear from row 2 onwards
+        range_name = f"A2:{chr(64 + num_cols)}{num_rows}"
+
+        sheet.update(empty_data, range_name)
+
+        logger.info("Sheet data cleared (header preserved)")
+
+    except Exception as e:
+        logger.error(f"Error clearing sheet: {e}")
+
+
+def get_failed_practices(sheet, section_name):
+    try:
+        col_mapping = {
+            "Appeals and Disputes": 1,
+            "Claim Letters": 2,
+            "HouseCalls Documentation": 3,
+            "Overpayment Documents": 4,
+            "Prior Auth Letters": 5,
+        }
+
+        col = col_mapping.get(section_name)
+        column_values = sheet.col_values(col)
+
+        failed_practices = []
+
+        for cell in column_values[1:]:  # skip header
+            if "FILE NOT FOUND" in cell:
+                name = cell.split(" - ")[0].strip()
+                failed_practices.append(name)
+
+        logger.info(f"Total failed practices: {len(failed_practices)}")
+        return failed_practices
+
+    except Exception as e:
+        logger.error(f"Error reading sheet: {e}")
+        return []

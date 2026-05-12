@@ -4,17 +4,19 @@ import time
 from datetime import datetime
 from src.login.onehealth_login import run_login
 from src.onehealth_home.page_size import set_page_size
-from src.onehealth_home.paginated_download import download_files_with_pagination
+from src.onehealth_home.paginated_download import check_stop_flag
 from src.gsheet.gsheet_writer import (
     bulk_update_uhc_file_status,
+    get_failed_practices,
     get_practices_from_sheet,
 )
 from src.utils.logger import setup_logger
-
+from src.onehealth_home.paginated_download import get_status_column_index
+from src.automation.stautus_column import ensure_status_column_visible
 
 logger = setup_logger(__name__)
 
-# =========================
+# =========================l
 # CONSTANTS (FIXED)
 # =========================
 
@@ -26,8 +28,9 @@ BREADCRUMB = "span[data-testid='folderpath_0']"
 COL_MAP = {
     "Appeals and Disputes": 1,
     "Claim Letters": 2,
-    "Overpayment Documents": 3,
-    "Prior Auth Letters": 4,
+    "HouseCalls Documentation": 3,
+    "Overpayment Documents": 4,
+    "Prior Auth Letters": 5,
 }
 
 # =========================
@@ -55,9 +58,9 @@ def wait_for_document_table(page: Page):
         "div[data-testid*='document']",  # Document test IDs
         "div[data-testid*='file']",  # File test IDs
         "div.abyss-data-table-row",  # Abyss table rows
-        "div.grid-row"  # Grid-based rows
+        "div.grid-row",  # Grid-based rows
     ]
-    
+
     # Try multiple possible "no documents" messages
     no_docs_selectors = [
         "div:has-text('No documents found')",
@@ -67,7 +70,7 @@ def wait_for_document_table(page: Page):
         "span:has-text('No documents found')",
         "p:has-text('No documents found')",
         "div.empty-state",
-        "div.no-results"
+        "div.no-results",
     ]
 
     for attempt in range(max_retries):
@@ -82,12 +85,14 @@ def wait_for_document_table(page: Page):
                 ".progress-bar",
                 "div.loading",
                 "span.loading",
-                "div.spinner"
+                "div.spinner",
             ]
-            
+
             for loading_selector in loading_selectors:
                 try:
-                    page.wait_for_selector(loading_selector, state="hidden", timeout=3000)
+                    page.wait_for_selector(
+                        loading_selector, state="hidden", timeout=3000
+                    )
                     break
                 except:
                     continue
@@ -101,7 +106,9 @@ def wait_for_document_table(page: Page):
                     if rows.count() > 0:
                         # Wait a bit more to ensure table is fully loaded
                         page.wait_for_timeout(2000)
-                        logger.info(f"Document table found with selector: {doc_selector}")
+                        logger.info(
+                            f"Document table found with selector: {doc_selector}"
+                        )
                         return True
                 except:
                     continue
@@ -117,7 +124,9 @@ def wait_for_document_table(page: Page):
                     continue
 
             # If we get here, neither documents nor "no documents" message was found
-            logger.warning(f"Attempt {attempt + 1}: No document table or empty state found")
+            logger.warning(
+                f"Attempt {attempt + 1}: No document table or empty state found"
+            )
 
         except Exception as e:
             logger.error(f"Attempt {attempt + 1} failed: {e}")
@@ -135,8 +144,6 @@ def wait_for_document_table(page: Page):
 # =========================
 # NAVIGATION HELPERS
 # =========================
-
-
 def go_to_first_page(page: Page):
     """
     Navigate to the first page with improved stability and error handling
@@ -280,6 +287,7 @@ def scrape_all_practice_names(page: Page, sheet, section_name: str):
 
     practices = []
     page_num = 1
+    stop_scraping = False
 
     while True:
         logger.info(f" Scraping page {page_num}")
@@ -289,6 +297,14 @@ def scrape_all_practice_names(page: Page, sheet, section_name: str):
 
         for i in range(total_rows):
             row = rows.nth(i)
+
+            icon = row.locator("span.material-symbols-rounded:has-text('circle')")
+
+            #  STOP COMPLETELY when first non-circle appears
+            if icon.count() == 0:
+                logger.info("First non-circle practice found - stopping scraping")
+                stop_scraping = True
+                break
 
             # clickable practice
             btn = row.locator("button#folder-level-select-link")
@@ -305,13 +321,17 @@ def scrape_all_practice_names(page: Page, sheet, section_name: str):
             if name and name not in practices:
                 practices.append(name)
 
+        #  break outer loop also
+        if stop_scraping:
+            break
+
         next_btn = page.locator(NEXT_BTN).first
         if next_btn.is_disabled():
             break
 
         next_btn.click()
         wait_for_practice_table(page)
-        set_page_size(page, 20)  # keep page size consistent
+        set_page_size(page, 20)  # Ensure page size stays at 20 after navigation
         page_num += 1
 
     logger.info(f" Total practices scraped: {len(practices)}")
@@ -325,44 +345,149 @@ def scrape_all_practice_names(page: Page, sheet, section_name: str):
     return practices
 
 
-# =========================
-# Download logic - Use paginated download for large file sets
-# =========================
-def download_files_for_practice(
+def download_files_with_pagination(
     page: Page, practice_name: str, section_name: str
 ) -> bool:
-    """
-    Download files using the new paginated approach for handling large numbers of files (200+)
-    This replaces the old single-page download logic with proper pagination support.
-    """
-    logger.info(f" Starting paginated download for {practice_name}")
-    
-    # Add extra wait to ensure we're on the correct page
-    page.wait_for_timeout(1000)
+    logger.info(f"Starting paginated download for {practice_name}")
 
-    # Wait for document table with retry logic
     try:
-        wait_for_document_table(page)
+        page.wait_for_selector("tbody tr", timeout=30000)
+
+        ensure_status_column_visible(page)
+
+        downloaded_count = 0
+        current_page = 1
+
+        while True:
+            if check_stop_flag():
+                logger.info("Automation stopped by user request")
+                return False
+
+            logger.info(f"Processing page {current_page}")
+
+            rows = page.locator("tbody tr")
+            total_rows = rows.count()
+
+            rows_to_download = []
+
+            # -------------------------
+            # FIND UNREAD ROWS
+            # -------------------------
+            for i in range(total_rows):
+                try:
+                    row = rows.nth(i)
+                    status_div = row.locator("div[id^='read-']")
+
+                    if status_div.count() == 0:
+                        continue
+
+                    status_text = status_div.first.text_content().strip().lower()
+
+                    if status_text == "unread":
+                        rows_to_download.append(i)
+
+                except Exception as e:
+                    logger.warning(f"Error reading row {i}: {e}")
+
+            # -------------------------
+            # SELECT + DOWNLOAD
+            # -------------------------
+            if rows_to_download:
+                logger.info(
+                    f"Found {len(rows_to_download)} unread rows on page {current_page}"
+                )
+
+                # select checkboxes
+                for row_idx in rows_to_download:
+                    try:
+                        checkbox = rows.nth(row_idx).locator("input[type='checkbox']")
+                        if checkbox.count() > 0 and not checkbox.is_checked():
+                            checkbox.check()
+                    except Exception as e:
+                        logger.warning(f"Checkbox error: {e}")
+
+                try:
+                    bulk_actions = page.locator(
+                        "[data-testid*='bulk-actions-dropdown']"
+                    ).first
+                    bulk_actions.click()
+                    page.wait_for_timeout(1500)
+
+                    download_item = page.locator(
+                        "div[role='menuitem']:has-text('Download')"
+                    ).first
+
+                    logger.info(f"Starting download for {len(rows_to_download)} files")
+
+                    downloads = []
+
+                    with page.expect_download(timeout=120000) as d:
+                        download_item.click()
+                    downloads.append(d.value)
+
+                    # capture remaining downloads
+                    for _ in range(len(rows_to_download) - 1):
+                        try:
+                            with page.expect_download(timeout=10000) as d:
+                                pass
+                            downloads.append(d.value)
+                        except:
+                            break
+
+                    # save files
+                    for i, download in enumerate(downloads):
+                        save_download(
+                            download, practice_name, section_name, downloaded_count + i
+                        )
+
+                    downloaded_count += len(downloads)
+
+                except Exception as e:
+                    logger.error(f"Download error: {e}")
+
+                # -------------------------
+                # UNCHECK AFTER DOWNLOAD
+                # -------------------------
+                for row_idx in rows_to_download:
+                    try:
+                        checkbox = rows.nth(row_idx).locator("input[type='checkbox']")
+                        if checkbox.count() > 0 and checkbox.is_checked():
+                            checkbox.uncheck()
+                    except:
+                        pass
+
+            # -------------------------
+            # NEXT PAGE
+            # -------------------------
+            try:
+                next_btn = page.locator("button[aria-label='next page']").first
+
+                if not next_btn.is_visible(timeout=3000) or next_btn.is_disabled():
+                    logger.info(f"Reached last page at {current_page}")
+                    break
+
+                next_btn.click()
+                page.wait_for_selector("tbody tr", timeout=25000)
+                page.wait_for_timeout(2000)
+
+            except Exception as e:
+                logger.error(f"Pagination error: {e}")
+                break
+
+            current_page += 1
+
+        logger.info(f"Download complete. Total files downloaded: {downloaded_count}")
+        return downloaded_count > 0
+
     except Exception as e:
-        logger.error(f"Document table wait failed: {e}")
+        logger.error(f"Download failed: {e}")
         return False
 
-    # Set page size to 50 for better pagination performance
-    set_page_size(page, 50)
 
-    # Use the new paginated download function
-    success = download_files_with_pagination(page, practice_name, section_name)
-    
-    if success:
-        logger.info(f" Successfully downloaded all files for {practice_name}")
-    else:
-        logger.error(f" Failed to download files for {practice_name}")
-    
-    return success
-
-
-from pathlib import Path
-from datetime import datetime
+# from pathlib import Path
+# from datetime import datetime
+# from pathlib import Path
+# from datetime import datetime
 
 
 def save_download(
@@ -376,7 +501,7 @@ def save_download(
         year_folder = today.strftime("%Y")
         date_folder = today.strftime("%m %d %Y")
 
-        # Google Drive path
+        # Google Drive path - all files under practice folder (no section subfolder)
         base = (
             Path(
                 r"G:\Shared drives\Reimbursement and Inventory Analysis\UHC Vault\Completed"
@@ -384,7 +509,6 @@ def save_download(
             / year_folder
             / date_folder
             / safe_name
-            / section_name
         )
 
         base.mkdir(parents=True, exist_ok=True)
@@ -427,6 +551,10 @@ def save_download(
 def process_section(page: Page, section_name: str, sheet):
 
     logger.info(f"\n=== Processing {section_name} ===")
+
+    if check_stop_flag():  #  stop check
+        logger.info("Automation stopped before starting section")
+        return
 
     # Open the section
     page.locator(f"a:has-text('{section_name}')").click()
@@ -476,15 +604,21 @@ def process_section(page: Page, section_name: str, sheet):
                 page.locator(f"a:has-text('{section_name}')").click()
                 page.wait_for_load_state("networkidle")
                 set_page_size(page, 20)
+                # Navigate to first page (page size already set, no need to set again)
+                go_to_first_page(page)
+                wait_for_practice_table(page)
         except Exception as e:
             logger.error(f"Page navigation check failed: {e}")
-            # If we can't verify the page, try to navigate back
+            # If we can't verify the page, reload and try to navigate back
             try:
-                page.go_back()
-                page.wait_for_timeout(2000)
+                page.reload()
+                page.wait_for_load_state("networkidle")
+                page.wait_for_timeout(3000)
                 page.locator(f"a:has-text('{section_name}')").click()
                 page.wait_for_load_state("networkidle")
                 set_page_size(page, 20)
+                go_to_first_page(page)
+                wait_for_practice_table(page)
             except:
                 logger.error(
                     f"Failed to return to {section_name} section for {practice}"
@@ -493,11 +627,12 @@ def process_section(page: Page, section_name: str, sheet):
                 batch_updates[practice] = status
                 continue
 
-        # Navigate to first page and set page size with error handling
+        # Navigate to first page if we are not already there or if we just returned to section
+        # (Already handled in the navigation recovery blocks above)
         try:
-            go_to_first_page(page)
+            # Ensure we are on the first page at the start of each practice search if not already handled
+            # go_to_first_page(page) # Removed redundant call here as it was causing loops
             wait_for_practice_table(page)
-            set_page_size(page, 20)
         except Exception as e:
             logger.error(f"Navigation failed for {practice}: {e}")
             # If navigation fails completely, mark as not found and continue
@@ -537,7 +672,7 @@ def process_section(page: Page, section_name: str, sheet):
                 else:
                     continue
 
-                if row_practice == practice:
+                if row_practice.lower() == practice.lower():
                     practice_found = True
                     logger.info(f"Found {practice}")
 
@@ -547,10 +682,10 @@ def process_section(page: Page, section_name: str, sheet):
                             status = "FILE NOT FOUND"
                         else:
                             try:
-                                btn.click(timeout=5000)
+                                btn.click(timeout=5000, force=True)
                                 page.wait_for_timeout(2000)
 
-                                success = download_files_for_practice(
+                                success = download_files_with_pagination(
                                     page, practice, section_name
                                 )
                                 status = (
@@ -612,7 +747,7 @@ def process_section(page: Page, section_name: str, sheet):
 
             next_btn.click()
             wait_for_practice_table(page)
-            set_page_size(page, 20)
+            # set_page_size(page, 20) # Avoid redundant page size setting during pagination
             page_num += 1
 
     # Update remaining practices
@@ -624,3 +759,189 @@ def process_section(page: Page, section_name: str, sheet):
             logger.error(f"Sheet bulk update failed: {e}")
 
     logger.info("All practices processed and sheet updated.")
+
+
+from src.gsheet.gsheet_client import get_uhc_file_sheet
+from src.utils.env_data import EnvData
+from src.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
+
+
+def get_practices_from_sheet(sheet, section_name: str) -> list[str]:
+    """
+    Get all practice names from the Google Sheet for a specific section.
+    Returns list of practice names without status suffixes.
+    """
+    if not sheet:
+        logger.info("Google Sheet not available for reading")
+        return []
+
+    logger.info(f"Reading practice names from Google Sheet for {section_name}...")
+
+    col_mapping = {
+        "Appeals and Disputes": 1,
+        "Claim Letters": 2,
+        "HouseCalls Documentation": 3,
+        "Overpayment Documents": 4,
+        "Prior Auth Letters": 5,
+    }
+
+    col = col_mapping.get(section_name, 1)
+    column_values = sheet.col_values(col)
+    practice_names = []
+
+    for cell_value in column_values:
+        if cell_value and cell_value.strip():
+            if " - " in cell_value:
+                name = cell_value.split(" - ")[0].strip()
+            else:
+                name = cell_value.strip()
+
+            if name.lower() not in [
+                "appeals and disputes",
+                "claim letters",
+                "housecalls documentation",
+                "overpayment documents",
+                "prior auth letters",
+            ]:
+                practice_names.append(name)
+
+    logger.info(
+        f"Found {len(practice_names)} practices in Google Sheet for {section_name}"
+    )
+    return practice_names
+
+
+def bulk_update_uhc_file_status(sheet, section_name: str, updates: dict):
+
+    if not sheet:
+        logger.info("Google Sheet not available")
+        return
+
+    headers = sheet.row_values(1)
+
+    if section_name not in headers:
+        raise Exception(f"Column '{section_name}' not found in Google Sheet")
+
+    col_index = headers.index(section_name) + 1
+    col_letter = chr(64 + col_index)
+
+    col_values = sheet.col_values(col_index)
+
+    batch_data = []
+
+    for i, cell_value in enumerate(col_values[1:], start=2):  # skip header row
+
+        base_name = cell_value.split(" - ")[0].strip()
+
+        if base_name in updates:
+
+            status = updates[base_name]
+            new_value = f"{base_name} - {status}"
+
+            batch_data.append({"range": f"{col_letter}{i}", "values": [[new_value]]})
+
+    if batch_data:
+
+        sheet.batch_update(batch_data)
+
+        logger.info(f"Bulk updated {len(batch_data)} rows")
+
+
+def batch_update_practice_names(sheet, practice_names: list[str], section_name: str):
+    """
+    Batch update multiple practice names (names only, NO status).
+    """
+    if not sheet or not practice_names:
+        logger.info(" No sheet or practice names to update")
+        return False
+
+    logger.info(f" Batch writing {len(practice_names)} practices into '{section_name}'")
+
+    # Column mapping (adjust if your sheet layout changes)
+    col_mapping = {
+        "Appeals and Disputes": 1,
+        "Claim Letters": 2,
+        "HouseCalls Documentation": 3,
+        "Overpayment Documents": 4,
+        "Prior Auth Letters": 5,
+    }
+
+    col = col_mapping.get(section_name)
+    if not col:
+        raise Exception(f"Column not defined for section: {section_name}")
+
+    start_row = 2  # after header row
+
+    #  gspread expects VALUES FIRST, then RANGE
+    values = [[name] for name in practice_names]
+    range_name = f"{chr(64 + col)}{start_row}:{chr(64 + col)}{start_row + len(practice_names) - 1}"
+
+    sheet.update(values, range_name)
+
+    logger.info(" Practice names written to Google Sheet (no status)")
+    return True
+
+
+def clear_sheet(sheet):
+    """
+    Clear only data (keep header row intact)
+    """
+    try:
+        # Get all values
+        all_values = sheet.get_all_values()
+
+        if len(all_values) <= 1:
+            logger.info("Sheet already empty (only header present)")
+            return
+
+        # Number of rows and columns
+        num_rows = len(all_values)
+        num_cols = len(all_values[0])
+
+        # Create empty data (excluding header)
+        empty_data = [["" for _ in range(num_cols)] for _ in range(num_rows - 1)]
+
+        # Clear from row 2 onwards
+        range_name = f"A2:{chr(64 + num_cols)}{num_rows}"
+
+        sheet.update(empty_data, range_name)
+
+        logger.info("Sheet data cleared (header preserved)")
+
+    except Exception as e:
+        logger.error(f"Error clearing sheet: {e}")
+
+
+def get_failed_practices(sheet, section_name):
+    try:
+        col_mapping = {
+            "Appeals and Disputes": 1,
+            "Claim Letters": 2,
+            "HouseCalls Documentation": 3,
+            "Overpayment Documents": 4,
+            "Prior Auth Letters": 5,
+        }
+
+        col = col_mapping.get(section_name)
+        column_values = sheet.col_values(col)
+
+        failed_practices = []
+
+        for cell in column_values[1:]:  # skip header
+            if "FILE NOT FOUND" in cell:
+                # name = cell.split(" - ")[0].strip()
+                if " - " in cell:
+                    parts = cell.rsplit(" - ", 1)
+                    name = parts[0].strip()
+                else:
+                    name = cell.strip()
+                failed_practices.append(name)
+
+        logger.info(f"Total failed practices: {len(failed_practices)}")
+        return failed_practices
+
+    except Exception as e:
+        logger.error(f"Error reading sheet: {e}")
+        return []
